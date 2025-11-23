@@ -1,0 +1,23 @@
+$TTL    604800
+@       IN      SOA     kube-svc01.kube.lan. contact.kube.lan (
+                  1     ; Serial
+             604800     ; Refresh
+              86400     ; Retry
+            2419200     ; Expire
+             604800     ; Minimum
+)
+
+    IN      NS      kube-svc01.kube.lan.
+
+1      IN    PTR    kube-svc01.kube.lan.
+1      IN    PTR    api.lab.kube.lan.
+1      IN    PTR    api-int.lab.kube.lan.
+;
+200    IN    PTR    kube-bootstrap.lab.kube.lan.
+;
+201    IN    PTR    kube-cp-1.lab.kube.lan.
+202    IN    PTR    kube-cp-2.lab.kube.lan.
+203    IN    PTR    kube-cp-3.lab.kube.lan.
+;
+211    IN    PTR    kube-w-1.lab.kube.lan.
+212    IN    PTR    kube-w-2.lab.kube.lan.
