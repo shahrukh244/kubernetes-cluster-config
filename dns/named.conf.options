@@ -1,0 +1,23 @@
+options {
+    directory "/var/cache/bind";
+    dump-file "/var/cache/bind/cache_dump.db";
+    statistics-file "/var/cache/bind/named_stats.txt";
+    memstatistics-file "/var/cache/bind/named_mem_stats.txt";
+    recursing-file "/var/cache/bind/named.recursing";
+    secroots-file "/var/cache/bind/named.secroots";
+
+    listen-on port 53 { 127.0.0.1; 10.0.0.1; };
+    # listen-on-v6 port 53 { ::1; };
+
+    allow-query { localhost; 10.0.0.0/24; };
+
+    recursion yes;
+
+    forwarders {
+        8.8.8.8;
+        8.8.4.4;
+        1.1.1.1;
+    };
+
+    dnssec-validation auto;
+};
