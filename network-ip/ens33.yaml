@@ -1,0 +1,10 @@
+network:
+  version: 2
+  ethernets:
+    ens33:
+      dhcp4: no
+      addresses:
+        - 10.0.0.1/24
+      nameservers:
+        addresses: [127.0.0.1]
+        search: [kube-svc-01.kube.lan]
