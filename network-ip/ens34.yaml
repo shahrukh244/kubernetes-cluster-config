@@ -7,4 +7,4 @@ network:
         - 10.0.0.1/24
       nameservers:
         addresses: [127.0.0.1]
-        search: [kube-svc-01.kube.lan]
+        search: [kube-svc-1.kube.lan]
