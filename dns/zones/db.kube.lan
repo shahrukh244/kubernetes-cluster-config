@@ -10,8 +10,7 @@ $TTL    604800
 
 kube-svc-01.kube.lan.          IN      A       10.0.0.1
 
-; Temp Bootstrap Node
-kube-bootstrap.lab.kube.lan.        IN      A      10.0.0.200
+
 
 ; Control Plane Nodes
 kube-cp-1.lab.kube.lan.         IN      A      10.0.0.201
