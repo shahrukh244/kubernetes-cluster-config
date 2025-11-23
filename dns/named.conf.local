@@ -1,0 +1,9 @@
+zone "kube.lan" {
+    type master;
+    file "/etc/bind/zones/db.kube.lan";
+};
+
+zone "0.0.10.in-addr.arpa" {
+    type master;
+    file "/etc/bind/zones/db.reverse";
+};
