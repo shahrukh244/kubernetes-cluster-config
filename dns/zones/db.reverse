@@ -12,8 +12,6 @@ $TTL    604800
 1      IN    PTR    kube-svc-01.kube.lan.
 
 ;
-200    IN    PTR    kube-bootstrap.lab.kube.lan.
-;
 201    IN    PTR    kube-cp-1.lab.kube.lan.
 202    IN    PTR    kube-cp-2.lab.kube.lan.
 203    IN    PTR    kube-cp-3.lab.kube.lan.
