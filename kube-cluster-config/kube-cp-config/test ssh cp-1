@@ -1,0 +1,153 @@
+import os
+import subprocess
+import sys
+# Paramiko import is delayed until we ensure it's installed (see function run_ssh_command)
+
+# --- Configuration (Adjust these variables) ---
+VENV_DIR = "auto_ssh_venv"
+HOSTNAME = '10.0.0.201'
+USERNAME = 'ubuntu'
+PASSWORD = '123'  # Used ONLY for the initial key installation
+KEY_TYPE = 'rsa'
+KEY_SIZE = 4096
+# We use a non-default path in the current directory for key generation
+KEY_PATH = os.path.join(os.getcwd(), f'id_{KEY_TYPE}_auto')
+REMOTE_COMMAND = 'touch hello_py_script.txt'
+# -----------------------------------------------
+
+def run_shell_command(command, check_error=True):
+    """Executes a shell command via subprocess."""
+    print(f"\n$ {command}")
+    try:
+        # Use shell=True for complex commands like chaining with '&&'
+        process = subprocess.run(
+            command,
+            shell=True,
+            check=check_error,
+            text=True,
+            capture_output=True,
+            executable='/bin/bash'
+        )
+        print(process.stdout.strip())
+        if process.stderr.strip() and check_error:
+            print("STDERR:", process.stderr.strip())
+        return process.returncode
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing command: {e.cmd}")
+        print("STDOUT:", e.stdout.strip())
+        print("STDERR:", e.stderr.strip())
+        sys.exit(1)
+    except FileNotFoundError:
+        print(f"Error: Command '{command.split()[0]}' not found.")
+        sys.exit(1)
+
+def setup_and_restart():
+    """Handles system setup, venv creation, and self-restarts into venv."""
+
+    # --- 1. SYSTEM DEPENDENCY CHECK ---
+    print("--- 1. Checking and Installing System Dependencies (Requires sudo) ---")
+    if run_shell_command("dpkg -l | grep python3-venv", check_error=False) != 0:
+        run_shell_command("sudo apt update && sudo apt install -y python3-venv")
+
+    if run_shell_command("dpkg -l | grep sshpass", check_error=False) != 0:
+        run_shell_command("sudo apt update && sudo apt install -y sshpass")
+
+    # --- 2. VIRTUAL ENVIRONMENT SETUP ---
+    print("\n--- 2. Setting up Virtual Environment ---")
+    if not os.path.isdir(VENV_DIR):
+        run_shell_command(f"python3 -m venv {VENV_DIR}")
+        print(f"Virtual environment '{VENV_DIR}' created.")
+
+    # --- 3. SELF-RESTART CHECK ---
+    # If the script is not running inside the venv, restart it.
+    venv_python = os.path.join(VENV_DIR, 'bin', 'python')
+    if venv_python not in sys.executable:
+        print(f"\n--- 3. Restarting script inside {VENV_DIR} to load dependencies ---")
+        # Replace the current process with the venv's python interpreter
+        os.execv(venv_python, [venv_python, sys.argv[0]])
+        # Execution halts here, and restarts at the top of the file
+
+    # --- 4. INSTALL PARAMIKO (Only runs after restart inside venv) ---
+    print("\n--- 4. Installing Paramiko ---")
+
+    # *** FIX IMPLEMENTATION: Use explicit path to VENV's pip ***
+    venv_pip = os.path.join(VENV_DIR, 'bin', 'pip')
+    run_shell_command(f"{venv_pip} install paramiko") # Use the explicit path
+    # ************************************************************
+
+def run_ssh_command():
+    """Core logic to generate key, install key, and execute command securely."""
+    # We import paramiko here, guaranteed to succeed only after setup_and_restart completes.
+    import paramiko
+
+    # --- 5. GENERATE SSH KEY ---
+    print("\n--- 5. Generating SSH Key ---")
+    if not os.path.exists(KEY_PATH):
+        print(f"Key not found at {KEY_PATH}. Generating new key...")
+        run_shell_command(f"ssh-keygen -t {KEY_TYPE} -b {KEY_SIZE} -f {KEY_PATH} -N ''")
+    else:
+        print(f"Key found at {KEY_PATH}. Skipping generation.")
+
+    # --- 6. INSTALL KEY ON REMOTE HOST (Requires Password) ---
+    print("\n--- 6. Installing Public Key on Remote Host (Using sshpass) ---")
+    # This step is the initial, non-secure login to install the key.
+    ssh_copy_command = (
+        f'sshpass -p "{PASSWORD}" ssh-copy-id -i {KEY_PATH}.pub '
+        f'-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null '
+        f'{USERNAME}@{HOSTNAME}'
+    )
+    run_shell_command(ssh_copy_command)
+    print("Public key successfully installed on remote host.")
+    #
+
+    # --- 7. EXECUTE COMMAND SECURELY (Using Paramiko Key) ---
+    print("\n--- 7. Connecting and executing command using secure key-based authentication ---")
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    try:
+        # Load the private key
+        key = paramiko.RSAKey.from_private_key_file(KEY_PATH)
+
+        print(f"Connecting to {USERNAME}@{HOSTNAME}...")
+        client.connect(hostname=HOSTNAME, username=USERNAME, pkey=key, timeout=10)
+
+        # Execute the command
+        print(f"Executing remote command: '{REMOTE_COMMAND}'")
+        stdin, stdout, stderr = client.exec_command(REMOTE_COMMAND)
+
+        exit_status = stdout.channel.recv_exit_status()
+
+        print("-" * 40)
+        print("STDOUT:", stdout.read().decode().strip())
+        print("STDERR:", stderr.read().decode().strip())
+        print("-" * 40)
+
+        if exit_status == 0:
+            print(f"✅ Success: Command executed successfully on {HOSTNAME}.")
+            print(f"File '{REMOTE_COMMAND.split()[-1]}' created in /home/{USERNAME}/ on the remote server.")
+        else:
+            print(f"❌ Failure: Remote command failed with exit status {exit_status}.")
+
+    except Exception as e:
+        print(f"\nCRITICAL ERROR during SSH connection: {e}")
+        sys.exit(1)
+    finally:
+        if client:
+            client.close()
+
+
+if __name__ == "__main__":
+
+    # Check if we are running inside the virtual environment
+    venv_python = os.path.join(VENV_DIR, 'bin', 'python')
+
+    # If not in the venv, or if paramiko hasn't been imported yet, run setup.
+    if venv_python not in sys.executable or "paramiko" not in sys.modules:
+        setup_and_restart()
+
+    # This block runs only when the script is running inside the venv and paramiko is installed.
+    run_ssh_command()
+
+    print("\n--- Script finished. ---")
