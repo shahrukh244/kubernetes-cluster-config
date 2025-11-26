@@ -6,6 +6,7 @@ Full idempotent setup script for Ubuntu systems with robust BIND handling.
 - Ensures SSH root/password login is enabled
 - Validates BIND config and zones before restarting
 - Uses 'named' where appropriate to avoid systemd alias errors
+- Comments swap lines in /etc/fstab using sed (does not remove lines)
 """
 
 import os
@@ -36,7 +37,6 @@ def run(cmd, check=False):
     return result.stdout.strip()
 
 def run_output(cmd):
-    """Run command and return dict with returncode, stdout, stderr."""
     p = subprocess.run(cmd, shell=True, capture_output=True, text=True)
     return {"returncode": p.returncode, "stdout": p.stdout.strip(), "stderr": p.stderr.strip()}
 
@@ -66,6 +66,8 @@ def backup_file(path):
         bak = f"{path}.bak"
         shutil.copy2(path, bak)
         log_ok(f"Backed up {path} -> {bak}")
+    else:
+        log_info(f"No file to backup at {path}")
 
 def files_same(src, dst):
     return os.path.exists(src) and os.path.exists(dst) and filecmp.cmp(src, dst, shallow=False)
@@ -126,27 +128,18 @@ def choose_bind_service():
     if service_exists("named"):
         return ("named", False)
     if service_exists("bind9"):
-        # Sometimes bind9 is an alias to named and systemctl refuses enable on alias.
-        # Prefer 'named' if alias exists in systemctl output.
         out = run("systemctl status bind9 || true")
-        if "Loaded: masked" in out or "alias" in out:
-            # prefer named
+        # if bind9 is an alias or masked prefer named
+        if "alias" in out or "linked" in out or "Loaded: masked" in out:
             if service_exists("named"):
                 return ("named", True)
         return ("bind9", False)
-    # neither explicitly found; still try 'named' first
     return ("named", False)
 
 def verify_bind_config_and_zones(bind_conf="/etc/bind/named.conf", zones=None):
-    """
-    Validate named configuration and zones. zones is dict zone_name->path.
-    Returns True if validation succeeded (or check tools not present), False if validation failed.
-    """
-    # If validation tools missing, warn but don't block
     if shutil.which("named-checkconf") is None:
         log_warn("named-checkconf not present; skipping BIND config validation")
         return True
-    # check main config (named-checkconf returns 0 on success)
     res = run_output("named-checkconf /etc/bind/named.conf")
     if res["returncode"] != 0:
         log_warn(f"named-checkconf reported error:\n{res['stderr']}")
@@ -170,7 +163,6 @@ def verify_bind_config_and_zones(bind_conf="/etc/bind/named.conf", zones=None):
 def restart_bind_service_with_validation():
     svc, alias_flag = choose_bind_service()
     log_info(f"Using DNS service '{svc}' for restart (alias_flag={alias_flag})")
-    # Validate config and zones
     zones = {
         "kube.lan": "/etc/bind/zones/db.kube.lan",
         "reverse": "/etc/bind/zones/db.reverse"
@@ -179,12 +171,9 @@ def restart_bind_service_with_validation():
     if not ok:
         log_warn("BIND validation failed; skipping restart. Fix config then restart 'named' or 'bind9' manually.")
         return False
-    # Attempt restart/enable
-    # If systemctl refuses to enable bind9 (alias), prefer enabling 'named'
-    if svc == "bind9" and alias_flag:
+    if svc == "bind9" and alias_flag and service_exists("named"):
         svc = "named"
         log_info("Switching to 'named' due to alias/enable restrictions")
-    # restart
     return restart_service(svc)
 
 # ---- Step implementations ----
@@ -222,35 +211,51 @@ def fix_ssh_config_and_root_password(root_pass=ROOT_PASS):
         log_ok("sshd_config updated")
     run(f"echo 'root:{root_pass}' | chpasswd", check=True)
     log_ok("Root password set/updated")
-    # Restart ssh service (try both names)
     if not (restart_service("ssh") or restart_service("sshd")):
         log_warn("Could not restart ssh service; restart manually")
 
 def disable_swap():
-    if run("swapon --show") != "":
-        run("swapoff -a", check=True)
-        log_ok("Swap turned off")
+    """
+    Comments swap lines in /etc/fstab using sed (does not delete) and turns off swap.
+    Uses the exact sed pattern requested: '/\s*swap\s/s/^/#/'
+    """
     fstab = "/etc/fstab"
     if os.path.exists(fstab):
-        with open(fstab, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        changed = False
-        new = []
-        for ln in lines:
-            if " swap " in ln and not ln.strip().startswith("#"):
-                new.append("#" + ln)
-                changed = True
+        backup_file(fstab)
+        # Use sed to comment lines that contain ' swap ' possibly with leading spaces/tabs
+        sed_cmd = r"sed -i '/\s*swap\s/s/^/#/' /etc/fstab"
+        try:
+            run(sed_cmd, check=True)
+            log_ok("Swap lines commented in /etc/fstab using sed")
+        except Exception as e:
+            log_warn(f"sed commenting failed: {e}; falling back to python edit")
+            # fallback: python-safe comment preserving content
+            with open(fstab, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            new_lines = []
+            changed = False
+            for ln in lines:
+                if re.search(r"\sswap\s", ln) and not ln.strip().startswith("#"):
+                    new_lines.append("#" + ln)
+                    changed = True
+                else:
+                    new_lines.append(ln)
+            if changed:
+                backup_file(fstab + ".fallback")
+                with open(fstab, "w", encoding="utf-8") as f:
+                    f.writelines(new_lines)
+                log_ok("Swap lines commented in /etc/fstab by fallback")
             else:
-                new.append(ln)
-        if changed:
-            backup_file(fstab)
-            with open(fstab, "w", encoding="utf-8") as f:
-                f.writelines(new)
-            log_ok("Swap entries in /etc/fstab commented")
-        else:
-            log_ok("No swap entries to change in /etc/fstab")
+                log_ok("No active swap lines to comment in /etc/fstab")
     else:
-        log_warn("/etc/fstab not found")
+        log_warn("/etc/fstab not found; cannot comment swap lines")
+
+    # Turn off swap immediately
+    try:
+        run("swapoff -a", check=True)
+        log_ok("Swap disabled now (swapoff -a)")
+    except Exception as e:
+        log_warn(f"swapoff failed or no active swap: {e}")
 
 def disable_ufw():
     if shutil.which("ufw"):
@@ -306,7 +311,6 @@ def configure_bind9():
         if ensure_file(src, dst):
             changed = True
     if changed:
-        # Validate and restart using robust function
         restarted = restart_bind_service_with_validation()
         if not restarted:
             log_warn("BIND config changed but restart was not performed automatically.")
@@ -336,26 +340,39 @@ def configure_dhcp():
     if ensure_file(dhcp_src, dhcp_dst):
         restart_service("isc-dhcp-server")
     else:
+        # still try to start/enable the service if present
         restart_service("isc-dhcp-server")
 
-def configure_nat_and_iptables():
+def ensure_ip_forwarding():
+    """
+    Bulletproof IP forwarding setter: removes any existing ip_forward lines (commented or not)
+    and appends a single 'net.ipv4.ip_forward=1' line, then applies it immediately.
+    """
     sysctl_conf = "/etc/sysctl.conf"
+    content = ""
     if os.path.exists(sysctl_conf):
-        txt = run(f"cat {sysctl_conf}")
-        if "net.ipv4.ip_forward=1" not in txt:
-            backup_file(sysctl_conf)
-            if re.search(r"^#?\s*net\.ipv4\.ip_forward\s*=\s*.*$", txt, flags=re.MULTILINE):
-                new = re.sub(r"^#?\s*net\.ipv4\.ip_forward\s*=\s*.*$", "net.ipv4.ip_forward=1", txt, flags=re.MULTILINE)
-            else:
-                new = txt + "\nnet.ipv4.ip_forward=1\n"
-            with open(sysctl_conf, "w", encoding="utf-8") as f:
-                f.write(new)
-            run("sysctl -p /etc/sysctl.conf || true")
-            log_ok("IP forwarding enabled")
-        else:
-            log_ok("IP forwarding already enabled")
-    else:
-        log_warn("/etc/sysctl.conf missing")
+        with open(sysctl_conf, "r", encoding="utf-8") as f:
+            content = f.read()
+    # build new content preserving non-ip_forward lines
+    new_lines = []
+    for line in content.splitlines():
+        if re.match(r"^\s*#?\s*net\.ipv4\.ip_forward\s*=.*", line):
+            continue
+        new_lines.append(line)
+    new_lines.append("net.ipv4.ip_forward=1")
+    backup_file(sysctl_conf)
+    with open(sysctl_conf, "w", encoding="utf-8") as f:
+        f.write("\n".join(new_lines) + "\n")
+    # apply immediately
+    try:
+        run("sysctl -w net.ipv4.ip_forward=1", check=False)
+        run("sysctl -p /etc/sysctl.conf || true", check=False)
+        log_ok("IP forwarding ensured (net.ipv4.ip_forward=1)")
+    except Exception as e:
+        log_warn(f"Failed to apply sysctl immediately: {e}")
+
+def configure_nat_and_iptables():
+    ensure_ip_forwarding()
     rules = [
         (f"-t nat -C POSTROUTING -s {NAT_SOURCE_NET} -o {NAT_OUT_IF} -j MASQUERADE",
          f"-t nat -A POSTROUTING -s {NAT_SOURCE_NET} -o {NAT_OUT_IF} -j MASQUERADE"),
