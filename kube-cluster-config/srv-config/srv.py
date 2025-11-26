@@ -215,23 +215,27 @@ def fix_ssh_config_and_root_password(root_pass=ROOT_PASS):
         log_warn("Could not restart ssh service; restart manually")
 
 def disable_swap():
-    """
+    r"""
     Comments swap lines in /etc/fstab using sed (does not delete) and turns off swap.
-    Uses the exact sed pattern requested: '/\s*swap\s/s/^/#/'
+    Uses the exact sed pattern requested: '/\s*swap\s/s/^/#/' WITHOUT producing Python warnings.
     """
     fstab = "/etc/fstab"
+
     if os.path.exists(fstab):
         backup_file(fstab)
-        # Use sed to comment lines that contain ' swap ' possibly with leading spaces/tabs
-        sed_cmd = r"sed -i '/\s*swap\s/s/^/#/' /etc/fstab"
+
+        # FIXED: escape \s properly to avoid SyntaxWarning
+        run(r"sed -i '/\s*swap\s/s/^/#/' /etc/fstab")
+
         try:
             run(sed_cmd, check=True)
             log_ok("Swap lines commented in /etc/fstab using sed")
         except Exception as e:
             log_warn(f"sed commenting failed: {e}; falling back to python edit")
-            # fallback: python-safe comment preserving content
+
             with open(fstab, "r", encoding="utf-8") as f:
                 lines = f.readlines()
+
             new_lines = []
             changed = False
             for ln in lines:
@@ -240,22 +244,24 @@ def disable_swap():
                     changed = True
                 else:
                     new_lines.append(ln)
+
             if changed:
-                backup_file(fstab + ".fallback")
+                backup_file(f"{fstab}.fallback")
                 with open(fstab, "w", encoding="utf-8") as f:
                     f.writelines(new_lines)
                 log_ok("Swap lines commented in /etc/fstab by fallback")
             else:
-                log_ok("No active swap lines to comment in /etc/fstab")
+                log_ok("No active swap lines found in /etc/fstab")
+
     else:
         log_warn("/etc/fstab not found; cannot comment swap lines")
 
-    # Turn off swap immediately
     try:
         run("swapoff -a", check=True)
         log_ok("Swap disabled now (swapoff -a)")
     except Exception as e:
         log_warn(f"swapoff failed or no active swap: {e}")
+
 
 def disable_ufw():
     if shutil.which("ufw"):
@@ -481,3 +487,4 @@ if __name__ == "__main__":
     except Exception as e:
         log_warn(f"Script terminated with error: {e}")
         raise
+
