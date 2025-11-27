@@ -206,4 +206,10 @@ run("systemctl status crio --no-pager || true")
 run("systemctl status containerd --no-pager || true")
 run("systemctl status kubelet --no-pager || true")
 
+
+# ==============================
+# Install NFS
+# ==============================
+run("apt install -y nfs-common")
+
 print("\nScript finished.")
