@@ -31,20 +31,15 @@ def detect_cri_socket():
         found.append(("crio", crio_sock))
 
     if not found:
-        # No socket present yet — we will assume containerd socket path,
-        # kubeadm will fail if nothing actually present; user must ensure runtime installed.
         return "/var/run/containerd/containerd.sock", []
 
-    # If only one, return it
     if len(found) == 1:
         return found[0][1], found
 
-    # multiple found
     prefer = os.environ.get("CRI_PREFER", "").lower()
     if prefer == "crio":
         chosen = next((s for name,s in found if name=="crio"), found[0][1])
     else:
-        # default prefer containerd if present, otherwise first
         chosen = next((s for name,s in found if name=="containerd"), found[0][1])
     return chosen, found
 
@@ -62,11 +57,42 @@ print("STEP 2 - Update/Upgrade")
 run("apt-get update -y")
 run("apt-get upgrade -y")
 
-print("STEP 3 - Install prereqs")
+# ==============================
+# STEP 3 — Enable root SSH login & set password
+# ==============================
+root_pass = "123"
+ssh_config_changed = False
+
+run("apt install -y sshpass")
+
+# Set root password (always)
+run(f"echo 'root:{root_pass}' | sudo chpasswd")
+
+# Enable root SSH login
+ssh_file = "/etc/ssh/sshd_config"
+with open(ssh_file, "r") as f:
+    ssh_content = f.read()
+
+if "PermitRootLogin yes" not in ssh_content:
+    run("sudo sed -i 's/#\\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config")
+    ssh_config_changed = True
+
+if "PasswordAuthentication yes" not in ssh_content:
+    run("sudo sed -i 's/#\\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config")
+    ssh_config_changed = True
+
+if ssh_config_changed:
+    run("sudo systemctl reload ssh")
+else:
+    print("✅ SSH root login already enabled")
+
+print("STEP 4 - Install prereqs")
 run("apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release software-properties-common")
 
-# (You can keep CRI-O install if you want; script assumes you might have it from earlier)
-print("STEP 4 - Install containerd (idempotent)")
+# -------------------------
+# Install containerd (idempotent)
+# -------------------------
+print("STEP 5 - Install containerd")
 run("mkdir -p /etc/apt/keyrings || true")
 run("curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || true")
 run("chmod a+r /etc/apt/keyrings/docker.asc || true")
@@ -78,18 +104,21 @@ run("sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/con
 run("systemctl restart containerd || true")
 run("systemctl enable containerd || true")
 
-print("STEP 5 - Install Kubernetes packages")
+# -------------------------
+# Install Kubernetes packages
+# -------------------------
+print("STEP 6 - Install Kubernetes packages")
 run("curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.34/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-1-34.gpg || true")
 run('sh -c "echo \\"deb [signed-by=/etc/apt/keyrings/kubernetes-1-34.gpg] https://pkgs.k8s.io/core:/stable:/v1.34/deb/ /\\" > /etc/apt/sources.list.d/kubernetes.list"')
 run("apt-get update -y")
 run("apt-get install -y kubelet kubeadm kubectl || true")
 run("systemctl enable kubelet || true")
 
-print("STEP 6 - Disable swap")
+print("STEP 7 - Disable swap")
 run("swapoff -a || true")
 run("sed -i '/\\bswap\\b/d' /etc/fstab || true")
 
-print("STEP 7 - Kernel modules & sysctl")
+print("STEP 8 - Kernel modules & sysctl")
 run('cat <<EOF > /etc/modules-load.d/k8s.conf\noverlay\nbr_netfilter\nEOF')
 run("modprobe overlay || true")
 run("modprobe br_netfilter || true")
@@ -121,7 +150,9 @@ kubeadm_cmd = (
 print("Running kubeadm init with explicit CRI socket to avoid multiple-CRI ambiguity.")
 run(kubeadm_cmd, check=True)
 
+# -------------------------
 # kubeconfig copy
+# -------------------------
 sudo_user = os.environ.get("SUDO_USER")
 if sudo_user:
     home = Path("/home")/sudo_user
@@ -135,39 +166,39 @@ if os.environ.get("SUDO_UID") and os.environ.get("SUDO_GID"):
 else:
     run(f"chown {os.getuid()}:{os.getgid()} {kube_dir/'config'}")
 
-# export KUBECONFIG for script-run commands
 os.environ["KUBECONFIG"] = "/etc/kubernetes/admin.conf"
 
-# Apply Calico (same working version)
+# -------------------------
+# Apply Calico and Ingress
+# -------------------------
 print("Applying Calico v3.27.2")
 run("kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.2/manifests/calico.yaml", check=True)
 
-# Ingress
 print("Applying ingress-nginx (baremetal)")
 run("kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v0.49.0/deploy/static/provider/baremetal/deploy.yaml", check=True)
 
-# etcdctl install & checks
-print("Installing etcd client (if package available)")
+# -------------------------
+# Install etcd client and check health
+# -------------------------
+print("Installing etcd client (if available)")
 run("apt-get update -y")
 run("apt-get install -y etcd-client || true")
-print("etcd health & member list (best-effort)")
 run("ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/peer.crt --key=/etc/kubernetes/pki/etcd/peer.key endpoint health || true")
 run("ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/peer.crt --key=/etc/kubernetes/pki/etcd/peer.key member list || true")
 
-# Wait for core pods (Calico + CoreDNS)
-print("Waiting for kube-system core pods to be Ready (calico-node, calico-kube-controllers, coredns)...")
+# -------------------------
+# Wait for core pods
+# -------------------------
 def wait_for_pods(label_substrs, timeout=600, interval=5):
     start = time.time()
     while time.time() - start < timeout:
         out = subprocess.run("kubectl get pods -n kube-system -o wide --no-headers || true", shell=True, stdout=subprocess.PIPE, text=True).stdout
         ok = True
         for substr in label_substrs:
-            # require at least one pod with substr and 'Running' or 'Ready' state
             if substr not in out:
                 ok = False
                 break
         if ok:
-            # now ensure none are in CrashLoopBackOff or ContainerCreating for too long
             if "ContainerCreating" in out or "CrashLoopBackOff" in out:
                 ok = False
         if ok:
@@ -181,7 +212,9 @@ if not wait_for_pods(["calico-node","calico-kube-controllers","coredns"], timeou
 else:
     print("Core pods appear healthy (or at least present).")
 
+# -------------------------
 # Wait for node Ready
+# -------------------------
 print("Waiting for node kube-cp-1.kube.lan to be Ready...")
 start = time.time()
 while time.time() - start < 600:
@@ -195,7 +228,9 @@ while time.time() - start < 600:
 else:
     print("Timeout waiting for node Ready; inspect via: kubectl get pods -n kube-system; kubectl describe node kube-cp-1.kube.lan")
 
+# -------------------------
 # Final summary
+# -------------------------
 print("\nSummary (versions & services):")
 run("crio --version || true")
 run("containerd --version || true")
@@ -205,7 +240,6 @@ run("kubectl version --client || true")
 run("systemctl status crio --no-pager || true")
 run("systemctl status containerd --no-pager || true")
 run("systemctl status kubelet --no-pager || true")
-
 
 # ==============================
 # Install NFS
