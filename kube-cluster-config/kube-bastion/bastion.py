@@ -431,6 +431,41 @@ def main():
     info("Starting distribution of SSH keys to targets (will wait for nodes & copy as they come up)")
     distribute_keys_wait_until_all_online(TARGET_IPS)
 
+
+
+    info("Starting distribution of SSH keys to targets (will wait for nodes & copy as they come up)")
+    distribute_keys_wait_until_all_online(TARGET_IPS)
+
+    # ------------------- NEW -------------------
+    fetch_kubeconfig_from_master(master_ip="10.0.0.201", bastion_ip="10.0.0.1")
+    # ------------------- END -------------------
+
+    ok("All done. Please review the above output for any warnings.")
+
+
+    # ---------- KUBECONFIG FETCH FROM MASTER ----------
+def fetch_kubeconfig_from_master(master_ip: str, bastion_ip: str):
+    kube_dir = Path.home() / ".kube"
+    kube_dir.mkdir(mode=0o700, exist_ok=True)
+    kube_config_path = kube_dir / "config"
+
+    info(f"Fetching kubeconfig from master {master_ip} and updating server to {bastion_ip}")
+    try:
+        cmd = (
+            f'ssh root@{master_ip} "cat /etc/kubernetes/admin.conf" | '
+            f"sed 's|server: https://[^:]*:6443|server: https://{bastion_ip}:6443|' > {kube_config_path}"
+        )
+        run(cmd)
+        run(f"chmod 600 {kube_config_path}")
+        ok(f"Kubeconfig saved to {kube_config_path} with correct permissions")
+
+        # Verify kubectl
+        info("Verifying kubectl access to cluster nodes")
+        run("kubectl get nodes")
+    except Exception as e:
+        warn(f"Failed to fetch or verify kubeconfig: {e}")
+
+
     ok("All done. Please review the above output for any warnings.")
 
 
