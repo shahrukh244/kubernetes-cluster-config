@@ -276,15 +276,6 @@ def disable_ufw():
     else:
         log_ok("ufw not installed")
 
-def clone_repo():
-    ensure_package("git")
-    if not os.path.exists(REPO_DIR):
-        log_info("Cloning repository...")
-        run(f"git clone https://github.com/shahrukh244/kubernetes-cluster-config.git {REPO_DIR}", check=True)
-        log_ok("Repository cloned")
-    else:
-        log_ok("Repository exists")
-
 def apply_netplan():
     changed = False
     for iface in INTERFACES_NETPLAN:
@@ -459,7 +450,6 @@ def main():
     fix_ssh_config_and_root_password()
     disable_swap()
     disable_ufw()
-    clone_repo()
     apply_netplan()
     configure_bind9()
     configure_dhcp()
